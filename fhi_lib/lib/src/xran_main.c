@@ -2433,6 +2433,14 @@ int32_t xran_handle_rx_pkts(struct rte_mbuf* pkt_q[], uint16_t xport_id, struct 
         }
         else
         {
+            /* Counted as errors, but the mbufs must still be returned to the
+             * pool: nothing downstream frees them (the handler's return value
+             * is discarded by xran_ethdi_filter_packet), so without this every
+             * C-Plane frame reaching an O-DU -- an echoing RU, C/U-plane VLAN
+             * or eAxC misrouting, mirrored switch traffic -- permanently
+             * leaked one mbuf from _eth_mbuf_pool. */
+            for (i = 0; i < num_control; ++i)
+                rte_pktmbuf_free(pkt_control[i]);
             p_dev_ctx->fh_counters.rx_err_ecpri += num_control;
             p_dev_ctx->fh_counters.rx_err_drop += num_control;
             print_dbg("O-DU recevied C-Plane message!");
