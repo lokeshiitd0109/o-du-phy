@@ -1860,6 +1860,16 @@ int32_t xran_process_tx_sym_cp_on_opt(void* pHandle, uint8_t ctx_id, uint32_t tt
                         {
                             /* current code should not go to fragmentation as it should be taken care of by section allocation already */
                             // print_err("should not go into fragmentation mtu %d packet size %d\n", p_xran_dev_ctx->mtu, sectinfo->numPrbc * (3*iq_sample_size_bits + 1));
+                            /* The packet was fully built: it sits in to_free_mbuf
+                             * with refcnt 2 (one reference for the NIC send, one
+                             * for the slot-reuse reclaim).  Abandoning it here
+                             * without consuming the send reference stranded the
+                             * mbuf at refcnt 1 forever once the slot was reused,
+                             * leaking one _eth_mbuf_pool_vf_small mbuf per
+                             * over-MTU PRB element per symbol until the pool was
+                             * exhausted.  Drop the send reference; the
+                             * to_free_mbuf entry reclaims the rest on reuse. */
+                            rte_pktmbuf_free(mb_oran_hdr_ext);
                             return 0;
                         }
                         elm_bytes += nPktSize;
@@ -2185,6 +2195,10 @@ xran_process_tx_srs_cp_on(void* pHandle, uint8_t ctx_id, uint32_t tti, int32_t s
                         }
                         else
                         {
+                            /* The indirect mbuf (refcnt 1, not tracked in
+                             * to_free_mbuf) was abandoned here without a free --
+                             * one mbuf leaked per over-MTU SRS element. */
+                            rte_pktmbuf_free(mb_oran_hdr_ext);
                             return 0;
                         }
                         elm_bytes += nPktSize;
@@ -2512,6 +2526,10 @@ xran_process_tx_csirs_cp_on(void* pHandle, uint8_t ctx_id, uint32_t tti, int32_t
                             }
                             else
                             {
+                                /* Same leak as the SRS path: the indirect mbuf
+                                 * was abandoned without a free -- one mbuf per
+                                 * over-MTU CSI-RS element. */
+                                rte_pktmbuf_free(mb_oran_hdr_ext);
                                 return 0;
                             }
                         }
