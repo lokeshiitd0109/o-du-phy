@@ -1283,6 +1283,17 @@ int32_t xran_cp_create_and_send_section(uint8_t xranPortId, uint8_t ruPortId, in
             {
                 print_err("Fail to build control plane packet - [%d:%d:%d] dir=%d\n",
                             frameId, sfId, slotId, dir);
+                /* Every sibling call site of xran_prepare_ctrl_pkt frees the
+                 * mbuf on this failure (generate_cpmsg_prach, the vMu SSB
+                 * path); this one dropped it on the floor and the loop
+                 * overwrote the pointer on the next element -- one mbuf leaked
+                 * per failed C-plane build.  Free only when this iteration
+                 * actually allocated (mirrors the send condition below). */
+                if(pPrbElm->generateCpPkt && mbuf != NULL)
+                {
+                    rte_pktmbuf_free(mbuf);
+                    mbuf = NULL;
+                }
             }
             else
             {
@@ -1542,6 +1553,10 @@ int32_t xran_cp_create_and_send_section(uint8_t xranPortId, uint8_t ruPortId, in
         {
             print_err("Fail to build control plane packet - [%d:%d:%d] dir=%d\n",
                         frameId, sfId, slotId, dir);
+            /* Same leak as the per-element path: the freshly allocated mbuf
+             * was neither sent nor freed on a build failure. */
+            rte_pktmbuf_free(mbuf);
+            mbuf = NULL;
         }
         else
         {
