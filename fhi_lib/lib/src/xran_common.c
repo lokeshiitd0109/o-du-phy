@@ -25,6 +25,7 @@
  **/
 
 #define _GNU_SOURCE
+#include "xran_io_safety.h"
 #include <assert.h>
 #include <err.h>
 #include <arpa/inet.h>
@@ -229,7 +230,7 @@ uint32_t pktFrameId, uint32_t pktSfId, uint32_t pktSlotId)
 */
 #define MAX_SYM_IDX_FROM_PACKET(interval) (256*SLOTS_PER_SYSTEMFRAME(interval)*XRAN_NUM_OF_SYMBOL_PER_SLOT)
 
-    int symIdxDeadlineMin, symIdxDeadlineMax=0;
+
     // int symIdxInPkt = tti * XRAN_NUM_OF_SYMBOL_PER_SLOT + symId;
 
 #ifdef POLL_EBBU_OFFLOAD
@@ -249,59 +250,19 @@ uint32_t pktFrameId, uint32_t pktSfId, uint32_t pktSlotId)
     int otaSymIdx=0;
     otaSymIdx = otaTti  * XRAN_NUM_OF_SYMBOL_PER_SLOT + otaSymId;
 
-    if (xran_get_syscfg_appmode() == O_DU)
-    {
-        if ((0 == otaTti) && (tti != 0))
-        { // When received packet is of last tti of a sec
-            otaSymIdx = MAX_SYM_IDX_FROM_PACKET(interval) + otaSymId;
-        }
-        symIdxDeadlineMax = tti * XRAN_NUM_OF_SYMBOL_PER_SLOT + symId + p_dev_ctx->perMu[mu].sym_up_ul_ub;
-        symIdxDeadlineMin = tti * XRAN_NUM_OF_SYMBOL_PER_SLOT + symId + p_dev_ctx->perMu[mu].sym_up_ul_lb;
-        if (symIdxDeadlineMax < otaSymIdx)
-        {
-            print_dbg("symUpUlUb=%d, {pktFId=%u, otaFId=%u}, {pktSfId=%u, otaSfId=%u}, \t {pktSlId=%u, otaSlId=%u}, {pktSym=%u, otaSym=%u}, {pktTti=%u, otaTti=%u},otaSymId = %d, xran_lib_ota_sym_idx_mu[mu] = %d\n",
-                   p_dev_ctx->perMu[mu].sym_up_ul_ub, pktFrameId, otaFrameId, pktSfId, otaSfId,
-                   pktSlotId, otaSlotId, symId, xran_lib_ota_sym_idx_mu[mu] % XRAN_NUM_OF_SYMBOL_PER_SLOT,
-                   tti, otaTti,otaSymId, xran_lib_ota_sym_idx_mu[mu]);
-            print_dbg("otaSymIdx=%d, symIdxDeadlineMax=%d, ttiPkt=%u, symPkt=%u, otaTti=%u",
-                otaSymIdx, symIdxDeadlineMax, tti, symId, otaTti);
-            ++p_dev_ctx->fh_counters.Rx_late;
-            return -1;
-        }
-        else if(otaSymIdx < symIdxDeadlineMin){
-            print_dbg("symUpUlLb=%d, {pktFId=%u, otaFId=%u}, {pktSfId=%u, otaSfId=%u}, \t {pktSlId=%u, otaSlId=%u}, {pktSym=%u, otaSym=%u}, {pktTti=%u, otaTti=%u},otaSymId = %d, xran_lib_ota_sym_idx_mu[mu] = %d\n",
-                   p_dev_ctx->perMu[mu].sym_up_ul_lb, pktFrameId, otaFrameId, pktSfId, otaSfId,
-                   pktSlotId, otaSlotId, symId, xran_lib_ota_sym_idx_mu[mu] % XRAN_NUM_OF_SYMBOL_PER_SLOT,
-                   tti, otaTti,otaSymId, xran_lib_ota_sym_idx_mu[mu]);
-            print_dbg("otaSymIdx=%d, symIdxDeadlineMin=%d, ttiPkt=%u, symPkt=%u, otaTti=%u",
-                otaSymIdx, symIdxDeadlineMin, tti, symId, otaTti);
-            ++p_dev_ctx->fh_counters.Rx_early;
-            return -1;
-        }
+    const int packet = tti * XRAN_NUM_OF_SYMBOL_PER_SLOT + symId;
+    const int delta = xran_symbol_delta(otaSymIdx, packet, MAX_SYM_IDX_FROM_PACKET(interval));
+    const int du = xran_get_syscfg_appmode() == O_DU;
+    const int lower = du ? p_dev_ctx->perMu[mu].sym_up_ul_lb : -p_dev_ctx->perMu[mu].ruRxSymUpMax;
+    const int upper = du ? p_dev_ctx->perMu[mu].sym_up_ul_ub : -p_dev_ctx->perMu[mu].ruRxSymUpMin;
+    const int timing = xran_rx_window_classify(delta, lower, upper);
+    if (timing < 0) {
+        ++p_dev_ctx->fh_counters.Rx_early;
+        return -1;
     }
-    else
-    {
-        symIdxDeadlineMin = tti*XRAN_NUM_OF_SYMBOL_PER_SLOT + symId - p_dev_ctx->perMu[mu].ruRxSymUpMin;
-        symIdxDeadlineMax = tti*XRAN_NUM_OF_SYMBOL_PER_SLOT + symId - p_dev_ctx->perMu[mu].ruRxSymUpMax;
-        if ((0 == tti) && (otaTti != 0))
-        {   // When received packet is of first tti of a sec with otaTti being  previous tti
-            symIdxDeadlineMin += MAX_SYM_IDX_FROM_PACKET(interval);
-            symIdxDeadlineMax += MAX_SYM_IDX_FROM_PACKET(interval);
-        }
-        /*Window for RU UP Rx: symIdxDeadlineMax < OTAsym < symIdxDeadlineMin*/
-        if(symIdxDeadlineMax > otaSymIdx)
-        {
-            print_dbg("Rx RU: pktTti=%d, otaTti=%d, symIdxDeadlineMax=%d, otaSymIdx=%d, pktSym=%d, otaSym=%d \n", 
-                tti, otaTti, symIdxDeadlineMax, otaSymIdx, symId, xran_lib_ota_sym_idx_mu[mu] % XRAN_NUM_OF_SYMBOL_PER_SLOT);
-            ++p_dev_ctx->fh_counters.Rx_late;
-            return -1;
-        }
-        else if(otaSymIdx > symIdxDeadlineMin){
-            print_dbg("Rx RU: pktTti=%d, otaTti=%d, otaSymIdx=%d, symIdxDeadlineMin=%d, pktSym=%d, otaSym=%d \n", 
-                tti, otaTti, otaSymIdx, symIdxDeadlineMin, symId, xran_lib_ota_sym_idx_mu[mu] % XRAN_NUM_OF_SYMBOL_PER_SLOT);
-            ++p_dev_ctx->fh_counters.Rx_early;
-            return -1;
-        }
+    if (timing > 0) {
+        ++p_dev_ctx->fh_counters.Rx_late;
+        return -1;
     }
     ++p_dev_ctx->fh_counters.Rx_on_time;
     return 0;
@@ -1135,7 +1096,7 @@ int32_t process_mbuf(struct rte_mbuf *pkt, void* handle, struct xran_eaxc_info *
     else
     {
         pCnt->rx_counter++;
-        pCnt->Rx_on_time++;
+        /* Timing was classified above, even when out-of-window packets are retained. */
         pCnt->Total_msgs_rcvd++;
         struct xran_prach_cp_config *PrachCfg = NULL;
 

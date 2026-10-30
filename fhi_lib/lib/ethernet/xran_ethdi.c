@@ -24,6 +24,7 @@
  **/
 
 #define _GNU_SOURCE
+#include "xran_io_safety.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -1299,10 +1300,23 @@ xran_status_t xran_create_and_send_lbm_packet(uint8_t port_id, struct xran_ethdi
     return XRAN_STATUS_SUCCESS;
 }
 
+static uint64_t xran_tx_unsent, xran_rx_ring_dropped;
+
+void xran_io_note_tx_drop(uint16_t count)
+{
+    if (count) __atomic_fetch_add(&xran_tx_unsent, count, __ATOMIC_RELAXED);
+}
+
+void xran_get_io_safety_stats(uint64_t *tx_unsent, uint64_t *rx_ring_dropped)
+{
+    if (tx_unsent) *tx_unsent = __atomic_load_n(&xran_tx_unsent, __ATOMIC_RELAXED);
+    if (rx_ring_dropped) *rx_ring_dropped = __atomic_load_n(&xran_rx_ring_dropped, __ATOMIC_RELAXED);
+}
+
 static inline uint16_t xran_tx_from_ring(int port, struct rte_ring *r)
 {
     struct rte_mbuf *mbufs[BURST_SIZE];
-    uint16_t dequeued, sent = 0;
+    uint16_t dequeued;
     uint32_t remaining;
     long t1 = MLogXRANTick();
 
@@ -1311,13 +1325,10 @@ static inline uint16_t xran_tx_from_ring(int port, struct rte_ring *r)
     if (!dequeued)
         return 0;   /* Nothing to send. */
 
-    while (1) {     /* When tx queue is full it is trying again till succeed */
-        sent += rte_eth_tx_burst(port, 0, &mbufs[sent], dequeued - sent);
-        if (sent == dequeued){
-            MLogXRANTask(PID_RADIO_ETH_TX_BURST, t1, MLogXRANTick());
-            return remaining;
-        }
-    }
+    xran_io_note_tx_drop(xran_tx_burst_bounded(port, 0, mbufs, dequeued,
+                                               rte_eth_tx_burst, rte_pktmbuf_free));
+    MLogXRANTask(PID_RADIO_ETH_TX_BURST, t1, MLogXRANTick());
+    return remaining;
 }
 
 int32_t process_dpdk_io(void* args)
@@ -1359,8 +1370,11 @@ int32_t process_dpdk_io(void* args)
                 long t1 = MLogXRANTick();
                 ctx->rx_vf_queue_cnt[port[port_id]][qi] += rxed;
                 enq_n =  rte_ring_enqueue_burst(ctx->rx_ring[port_id][qi], (void*)mbufs, rxed, NULL);
-                if(rxed - enq_n)
-                    rte_panic("error enq\n");
+                /* Ring owns its accepted prefix; release only our rejected tail.
+                 * Overload must not abort every RU served by this process. */
+                const uint16_t dropped = xran_release_suffix(mbufs, enq_n, rxed, rte_pktmbuf_free);
+                if (dropped)
+                    __atomic_fetch_add(&xran_rx_ring_dropped, dropped, __ATOMIC_RELAXED);
                 MLogXRANTask(PID_RADIO_RX_VALIDATE, t1, MLogXRANTick());
             }
         }
@@ -1425,8 +1439,11 @@ int32_t process_dpdk_io_port_id(int32_t port_start, int32_t port_num)
                 rxed_total += rxed;
                 ctx->rx_vf_queue_cnt[port[port_id]][qi] += rxed;
                 enq_n =  rte_ring_enqueue_burst(ctx->rx_ring[port_id][qi], (void*)mbufs, rxed, NULL);
-                if(rxed - enq_n)
-                    rte_panic("error enq\n");
+                /* Ring owns its accepted prefix; release only our rejected tail.
+                 * Overload must not abort every RU served by this process. */
+                const uint16_t dropped = xran_release_suffix(mbufs, enq_n, rxed, rte_pktmbuf_free);
+                if (dropped)
+                    __atomic_fetch_add(&xran_rx_ring_dropped, dropped, __ATOMIC_RELAXED);
             }
         }
 
@@ -1503,8 +1520,11 @@ int32_t process_dpdk_io_rx(void* args)
                 long t1 = MLogXRANTick();
                 ctx->rx_vf_queue_cnt[port[port_id]][qi] += rxed;
                 enq_n =  rte_ring_enqueue_burst(ctx->rx_ring[port_id][qi], (void*)mbufs, rxed, NULL);
-                if(rxed - enq_n)
-                    rte_panic("error enq\n");
+                /* Ring owns its accepted prefix; release only our rejected tail.
+                 * Overload must not abort every RU served by this process. */
+                const uint16_t dropped = xran_release_suffix(mbufs, enq_n, rxed, rte_pktmbuf_free);
+                if (dropped)
+                    __atomic_fetch_add(&xran_rx_ring_dropped, dropped, __ATOMIC_RELAXED);
                 MLogXRANTask(PID_RADIO_RX_VALIDATE, t1, MLogXRANTick());
             }
         }

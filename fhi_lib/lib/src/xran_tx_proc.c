@@ -24,6 +24,7 @@
  **/
 
 #define _GNU_SOURCE
+#include "xran_io_safety.h"
 #include <sched.h>
 #include <assert.h>
 #include <err.h>
@@ -1251,7 +1252,7 @@ int32_t vfStat[XRAN_PORTS_NUM*2] = { 0 };
 static inline uint16_t xran_tx_sym_from_ring(struct xran_device_ctx* p_xran_dev_ctx, struct rte_ring *r, uint16_t vf_id)
 {
     struct rte_mbuf *mbufs[XRAN_MAX_MEM_IF_RING_SIZE];
-    uint16_t dequeued, sent = 0;
+    uint16_t dequeued;
     uint32_t remaining;
 
     dequeued = rte_ring_dequeue_burst(r, (void **)mbufs, XRAN_MAX_MEM_IF_RING_SIZE,
@@ -1328,14 +1329,9 @@ static inline uint16_t xran_tx_sym_from_ring(struct xran_device_ctx* p_xran_dev_
 }
 #endif
 
-    while (1)
-    {
-        sent += rte_eth_tx_burst(vf_id, 0, &mbufs[sent], dequeued - sent);
-        if (sent == dequeued)
-        {
-            return remaining;
-        }
-    }
+    xran_io_note_tx_drop(xran_tx_burst_bounded(vf_id, 0, mbufs, dequeued,
+                                               rte_eth_tx_burst, rte_pktmbuf_free));
+    return remaining;
 }
 
 
@@ -1826,11 +1822,11 @@ int32_t xran_process_tx_sym_cp_on_opt(void* pHandle, uint8_t ctx_id, uint32_t tt
                             /* no fragmentation */
                             //len2 = 1;
 #ifdef TRANSMIT_BURST
-                            loc_tx_mbufs.m_table[len++] = (void*)mb_oran_hdr_ext;
-                            if (unlikely(len > XRAN_MAX_PKT_BURST_PER_SYM))
+                            if (unlikely(len >= XRAN_MAX_PKT_BURST_PER_SYM))
                             {
                                 rte_panic("XRAN_MAX_PKT_BURST_PER_SYM\n");
                             }
+                            loc_tx_mbufs.m_table[len++] = (void*)mb_oran_hdr_ext;
                             loc_tx_mbufs.len = len;
 #else
 
@@ -1886,7 +1882,7 @@ int32_t xran_process_tx_sym_cp_on_opt(void* pHandle, uint8_t ctx_id, uint32_t tt
                 for (int32_t i = 0; i < loc_tx_mbufs.len; i++)
                 {
                     if(xran_get_syscfg_bbuoffload())
-                        rte_ring_enqueue(ring, loc_tx_mbufs_fragmented.m_table[i]);
+                        xran_enqueue_mbuf(loc_tx_mbufs.m_table[i], ring);
                     else
                         p_xran_dev_ctx->send_upmbuf2ring(loc_tx_mbufs.m_table[i], ETHER_TYPE_ECPRI, vf_id);
                 }

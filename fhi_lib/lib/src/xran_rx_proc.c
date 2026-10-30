@@ -24,6 +24,7 @@
  **/
 
 #define _GNU_SOURCE
+#include "xran_io_safety.h"
 #include <sched.h>
 #include <assert.h>
 #include <err.h>
@@ -95,8 +96,15 @@ int xran_process_prach_sym(void *arg,
     //xran_status_t status;
     struct xran_prb_map *pRbMap    = NULL;
     struct rte_mbuf *mb;
-    uint32_t interval = xran_fs_get_tti_interval(mu);
+    uint32_t interval;
 
+    if (mu >= XRAN_MAX_NUM_MU || CC_ID >= XRAN_MAX_SECTOR_NR)
+        goto prach_counter_free_mbuf_return_size;
+    interval = xran_fs_get_tti_interval(mu);
+    const int offset = xran_prach_symbol_offset(symb_id, p_xran_dev_ctx->prach_start_symbol[CC_ID],
+                                                 XRAN_NUM_OF_SYMBOL_PER_SLOT);
+    if (offset < 0)
+        goto prach_counter_free_mbuf_return_size;
     if(p_xran_dev_ctx->xran2phy_mem_ready == 0)
         return 0;
 
@@ -128,7 +136,7 @@ int xran_process_prach_sym(void *arg,
         if(unlikely(pRbMap == NULL)) goto prach_counter_free_mbuf_return_size;
         if(iq_data_start && size)
         {
-            symb_id_offset = symb_id - p_xran_dev_ctx->prach_start_symbol[CC_ID];
+            symb_id_offset = offset;
             struct xran_rx_packet_ctl *pFrontHaulRxPacketCtrl = &pRbMap->sFrontHaulRxPacketCtrl[symb_id_offset];
             int32_t npkts = pFrontHaulRxPacketCtrl->nRxPkt;
             if (unlikely(npkts >= XRAN_MAX_RX_PKT_PER_SYM))
