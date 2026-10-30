@@ -233,17 +233,17 @@ uint32_t pktFrameId, uint32_t pktSfId, uint32_t pktSlotId)
 
     // int symIdxInPkt = tti * XRAN_NUM_OF_SYMBOL_PER_SLOT + symId;
 
-#ifdef POLL_EBBU_OFFLOAD
-    int otaSymId = xran_lib_ota_sym_idx_mu[mu] % XRAN_NUM_OF_SYMBOL_PER_SLOT;
-    int32_t otaTti = (int32_t)XranGetTtiNum(pCtx->ebbu_offload_ota_sym_cnt_mu[mu], XRAN_NUM_OF_SYMBOL_PER_SLOT);
-#else
-    int otaSymId = xran_lib_ota_sym_idx_mu[mu] % XRAN_NUM_OF_SYMBOL_PER_SLOT;
-    int32_t otaTti = (int32_t)XranGetTtiNum(xran_lib_ota_sym_idx_mu[mu], XRAN_NUM_OF_SYMBOL_PER_SLOT);
-#endif
+    uint32_t index;
+    uint16_t sfn;
+    /* A publisher from the selected timer is required. Do not drop packets
+     * based on an uninitialised or mixed-epoch clock. */
+    if (!xran_read_rx_clock(mu, &index, &sfn)) return 0;
+    int otaSymId = index % XRAN_NUM_OF_SYMBOL_PER_SLOT;
+    int32_t otaTti = index / XRAN_NUM_OF_SYMBOL_PER_SLOT;
     int32_t interval = xran_fs_get_tti_interval(mu);
     uint32_t otaSlotId = XranGetSlotNum(otaTti, SLOTNUM_PER_SUBFRAME(interval));
     uint32_t otaSfId = XranGetSubFrameNum(otaTti, SLOTNUM_PER_SUBFRAME(interval), SUBFRAMES_PER_SYSTEMFRAME);
-    uint32_t otaFrameId = XranGetFrameNum(otaTti, xran_getSfnSecStart(), SUBFRAMES_PER_SYSTEMFRAME, SLOTNUM_PER_SUBFRAME(interval));
+    uint32_t otaFrameId = XranGetFrameNum(otaTti, sfn, SUBFRAMES_PER_SYSTEMFRAME, SLOTNUM_PER_SUBFRAME(interval));
     otaFrameId &= 0xff;
     otaTti = otaFrameId * SLOTS_PER_SYSTEMFRAME(interval) + otaSfId * SLOTNUM_PER_SUBFRAME(interval) + otaSlotId;
 
@@ -838,28 +838,15 @@ int process_mbuf_batch(struct rte_mbuf* pkt_q[], void* handle, int16_t num, stru
                     break;
                 }
 
-                int32_t npkts = pFrontHaulRxPacketCtrl->nRxPkt;
-                if (unlikely(npkts >= XRAN_MAX_RX_PKT_PER_SYM))
-                {
-                    if (firstprint == 0) print_err("batch:(%d : %d : %d : %d)Received %d type-1 packets on symbol %u\n", frame_id[i], subframe_id[i], subframe_id[i], Ant_ID[i], npkts, symb_id[i]);
-                    firstprint = 1;
+                if (xran_rx_packet_store(pFrontHaulRxPacketCtrl, start_prbu[i], num_prbu[i],
+                        sect_id[i], iq_samp_buf[i], pkt_q[i], 1, tti, 256 * SLOTS_PER_SYSTEMFRAME(interval_us_local)) < 0) {
+                    ++p_dev_ctx->fh_counters.rx_err_drop;
+                    ++p_dev_ctx->fh_counters.rx_err_pusch;
                     break;
                 }
-                else
-                {                
-                    mb = pFrontHaulRxPacketCtrl->pCtrl[npkts];
-                    if(mb){
-                        rte_pktmbuf_free(mb);
-                    }
-                    pFrontHaulRxPacketCtrl->nRBStart[npkts] = start_prbu[i];
-                    pFrontHaulRxPacketCtrl->nRBSize[npkts] = num_prbu[i];
-                    pFrontHaulRxPacketCtrl->nSectid[npkts] = sect_id[i];
-                    pFrontHaulRxPacketCtrl->pData[npkts] = iq_samp_buf[i];
-                    pFrontHaulRxPacketCtrl->pCtrl[npkts] = (0 == nSectionIdx) ? pkt_q[i] : NULL;
-                    pFrontHaulRxPacketCtrl->nRxPkt = npkts + 1;
-
-                    if (0 == nSectionIdx) ret_data[i] = MBUF_KEEP;
- 
+                {
+                    /* Each section owns a reference. The parser keeps and
+                     * releases the original reference even across callbacks. */
                     if (num_bytes[i] > nSectionLen + sizeof(struct data_section_hdr))
                     {
                         data_hdr[i] = (struct data_section_hdr*)(((char *)iq_samp_buf[i]) + nSectionLen);
@@ -1200,7 +1187,7 @@ int32_t process_mbuf(struct rte_mbuf *pkt, void* handle, struct xran_eaxc_info *
                                         num_prbu, start_prbu, sym_inc, rb, sect_id,
                                         &mb_free, expect_comp, compMeth, iqWidth, mu, nSectionIdx);
                         if (0 == nSectionIdx)
-                            ret = mb_free;
+                            ret = MBUF_FREE; /* stored sections have independent references */
                         nSectionIdx++;
                         nSectionContinue = 0;
 

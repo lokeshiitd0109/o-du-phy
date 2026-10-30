@@ -24,6 +24,7 @@
  **/
 
 #define _GNU_SOURCE
+#include <rte_spinlock.h>
 #include "xran_io_safety.h"
 #include <sched.h>
 #include <assert.h>
@@ -69,6 +70,8 @@
 #include "xran_cp_proc.h"
 
 #include "xran_mlog_lnx.h"
+
+#include "xran_rx_ownership.h"
 
 int xran_process_prach_sym(void *arg,
                         struct rte_mbuf *mbuf,
@@ -138,27 +141,10 @@ int xran_process_prach_sym(void *arg,
         {
             symb_id_offset = offset;
             struct xran_rx_packet_ctl *pFrontHaulRxPacketCtrl = &pRbMap->sFrontHaulRxPacketCtrl[symb_id_offset];
-            int32_t npkts = pFrontHaulRxPacketCtrl->nRxPkt;
-            if (unlikely(npkts >= XRAN_MAX_RX_PKT_PER_SYM))
-            {
-                print_err("(%d : %d : %d : %d)Received %d type-1 packets on symbol %d\n", frame_id, subframe_id, slot_id, Ant_ID, npkts, symb_id);
-                goto prach_counter_free_mbuf_return_size;
-            }
-            else
-            {
-                pFrontHaulRxPacketCtrl->nRxPkt = npkts + 1;
-            }
-            mb = pFrontHaulRxPacketCtrl->pCtrl[npkts];
-            if(mb){
-               rte_pktmbuf_free(mb);
-            }
-            pFrontHaulRxPacketCtrl->nRBStart[npkts] = start_prbu;
-            pFrontHaulRxPacketCtrl->nRBSize[npkts] = num_prbu;
-            pFrontHaulRxPacketCtrl->nSectid[npkts] = sect_id;
-            pFrontHaulRxPacketCtrl->pData[npkts] = iq_data_start;
-            pFrontHaulRxPacketCtrl->pCtrl[npkts] = mbuf;
-            
-            *mb_free = MBUF_KEEP;
+            if (xran_rx_packet_store(pFrontHaulRxPacketCtrl, start_prbu, num_prbu,
+                    sect_id, iq_data_start, mbuf, 0, tti + ttt_det, 256 * SLOTS_PER_SYSTEMFRAME(interval)) < 0)
+                    goto prach_counter_free_mbuf_return_size;
+                *mb_free = MBUF_KEEP;
             return size;
         }
     }
@@ -202,7 +188,6 @@ int32_t xran_process_srs_sym(void *arg,
     struct rte_mbuf *mb = NULL;
     struct xran_prb_map * pRbMap    = NULL;
     uint32_t interval = xran_fs_get_tti_interval(mu);
-    static uint32_t firstprint = 0;
 
     if(p_xran_dev_ctx->xran2phy_mem_ready == 0)
         return 0;
@@ -259,27 +244,9 @@ int32_t xran_process_srs_sym(void *arg,
             else if (likely(p_xran_dev_ctx->fh_cfg.ru_conf.byteOrder == XRAN_NE_BE_BYTE_ORDER))
             {
                 struct xran_rx_packet_ctl *pFrontHaulRxPacketCtrl = &pRbMap->sFrontHaulRxPacketCtrl[symb_id];
-                int32_t npkts = pFrontHaulRxPacketCtrl->nRxPkt;
-                if (unlikely(npkts >= XRAN_MAX_RX_PKT_PER_SYM))
-                {
-                    if (firstprint == 0) print_err("(%d : %d : %d : %d)Received %d SRS packets on symbol %d\n",frame_id, subframe_id, slot_id, Ant_ID, npkts, symb_id);
-                    firstprint = 1;
+                if (xran_rx_packet_store(pFrontHaulRxPacketCtrl, start_prbu, num_prbu,
+                    sect_id, iq_data_start, mbuf, 0, tti, 256 * SLOTS_PER_SYSTEMFRAME(interval)) < 0)
                     goto increment_counter_free_mbuf_return_size;
-                }
-                else
-                {
-                    pFrontHaulRxPacketCtrl->nRxPkt = npkts + 1;
-                }
-                mb = pFrontHaulRxPacketCtrl->pCtrl[npkts];
-                if(mb)
-                {
-                   rte_pktmbuf_free(mb);
-                }
-                pFrontHaulRxPacketCtrl->nRBStart[npkts] = start_prbu;
-                pFrontHaulRxPacketCtrl->nRBSize[npkts] = num_prbu;
-                pFrontHaulRxPacketCtrl->nSectid[npkts] = sect_id;
-                pFrontHaulRxPacketCtrl->pData[npkts] = iq_data_start;
-                pFrontHaulRxPacketCtrl->pCtrl[npkts] = mbuf;
                 *mb_free = MBUF_KEEP;
                 goto return_size;
             } /* else if (likely(p_xran_dev_ctx->fh_cfg.ru_conf.byteOrder == XRAN_NE_BE_BYTE_ORDER)) */
@@ -380,27 +347,10 @@ int32_t xran_process_csirs_sym(void *arg,
         if(iq_data_start && size)
         {
             struct xran_rx_packet_ctl *pFrontHaulRxPacketCtrl = &pRbMap->sFrontHaulRxPacketCtrl[symb_id];
-            int32_t npkts = pFrontHaulRxPacketCtrl->nRxPkt;
-            if (unlikely(npkts >= XRAN_MAX_RX_PKT_PER_SYM))
-            {
-                print_err("Received %d type-1 CSI-RS packets on symbol %d\n", npkts, symb_id);
-                goto increment_counter_free_mbuf_return_size;
-            }
-            else
-            {
-                pFrontHaulRxPacketCtrl->nRxPkt = npkts + 1;
-            }
-            mb = pFrontHaulRxPacketCtrl->pCtrl[npkts];
-            if(mb){
-               rte_pktmbuf_free(mb);
-            }
-            pFrontHaulRxPacketCtrl->nRBStart[npkts] = start_prbu;
-            pFrontHaulRxPacketCtrl->nRBSize[npkts] = num_prbu;
-            pFrontHaulRxPacketCtrl->nSectid[npkts] = sect_id;
-            pFrontHaulRxPacketCtrl->pData[npkts] = iq_data_start;
-            pFrontHaulRxPacketCtrl->pCtrl[npkts] = mbuf;
-            
-            *mb_free = MBUF_KEEP;
+            if (xran_rx_packet_store(pFrontHaulRxPacketCtrl, start_prbu, num_prbu,
+                    sect_id, iq_data_start, mbuf, 0, tti, 256 * SLOTS_PER_SYSTEMFRAME(interval)) < 0)
+                    goto increment_counter_free_mbuf_return_size;
+                *mb_free = MBUF_KEEP;
             goto return_size;
         }
 
@@ -530,7 +480,6 @@ int32_t xran_process_rx_sym(void *arg,
     struct xran_prb_elm * prbMapElm = NULL;
     uint32_t interval = xran_fs_get_tti_interval(mu);
     uint16_t i=0, prb_elem_id = 0;
-    static uint32_t firstprint = 0;
     Ant_ID -= p_xran_dev_ctx->perMu[mu].eaxcOffset;
 
     tti = frame_id * SLOTS_PER_SYSTEMFRAME(interval) + subframe_id * SLOTNUM_PER_SUBFRAME(interval) + slot_id;
@@ -587,28 +536,9 @@ int32_t xran_process_rx_sym(void *arg,
             else if (likely(p_xran_dev_ctx->fh_cfg.ru_conf.byteOrder == XRAN_NE_BE_BYTE_ORDER))
             {
                 struct xran_rx_packet_ctl *pFrontHaulRxPacketCtrl = &pRbMap->sFrontHaulRxPacketCtrl[symb_id];
-                int32_t npkts = pFrontHaulRxPacketCtrl->nRxPkt;
-                /*if (unlikely(npkts >= 20))
-                    printf("npkt %d (%d : %d : %d : %d) (start %d num %d sect %d)\n",npkts,frame_id, subframe_id, slot_id, Ant_ID,start_prbu,num_prbu,sect_id);*/
-                if (unlikely(npkts >= XRAN_MAX_RX_PKT_PER_SYM))
-                {
-                    if (firstprint == 0) print_err("(%d : %d : %d : %d)Received %d type-1 packets on symbol %d\n", frame_id, subframe_id, slot_id, Ant_ID, npkts, symb_id);
-                    firstprint = 1;
+                if (xran_rx_packet_store(pFrontHaulRxPacketCtrl, start_prbu, num_prbu,
+                    sect_id, iq_data_start, mbuf, 1, tti, 256 * SLOTS_PER_SYSTEMFRAME(interval)) < 0)
                     goto inc_counter_free_mbuf_return_size;
-                }
-                else
-                {
-                    pFrontHaulRxPacketCtrl->nRxPkt = npkts + 1;
-                }
-                mb = pFrontHaulRxPacketCtrl->pCtrl[npkts];
-                if(mb){
-                   rte_pktmbuf_free(mb);
-                }
-                pFrontHaulRxPacketCtrl->nRBStart[npkts] = start_prbu;
-                pFrontHaulRxPacketCtrl->nRBSize[npkts] = num_prbu;
-                pFrontHaulRxPacketCtrl->nSectid[npkts] = sect_id;
-                pFrontHaulRxPacketCtrl->pData[npkts] = iq_data_start;
-                pFrontHaulRxPacketCtrl->pCtrl[npkts] = (0 == nSectionIdx) ? mbuf : NULL;
                 *mb_free = MBUF_KEEP;
                 return size;
             }

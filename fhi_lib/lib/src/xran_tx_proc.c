@@ -272,6 +272,7 @@ int32_t xran_process_tx_sym_cp_off(void *pHandle, uint8_t ctx_id, uint32_t tti, 
                         if (send_flag)
                         {
                             rte_mbuf_sanity_check((struct rte_mbuf *)send_mb, 0);
+                            const uint32_t send_len = rte_pktmbuf_pkt_len((struct rte_mbuf *)send_mb);
                             if(xran_get_syscfg_bbuoffload() == 1)
                             {
                                 struct rte_mbuf *send_mb_temp = (struct rte_mbuf *)send_mb;
@@ -279,17 +280,14 @@ int32_t xran_process_tx_sym_cp_off(void *pHandle, uint8_t ctx_id, uint32_t tti, 
                                 xran_add_eth_hdr_vlan(&eth_ctx->entities[vf_id][ID_O_RU], ETHER_TYPE_ECPRI, send_mb_temp);
 
                                 if(likely(ring)) {
-                                    if(rte_ring_enqueue(ring, (struct rte_mbuf *)send_mb)) {
-                                        rte_panic("Ring enqueue failed. Ring free count [%d]\n",rte_ring_free_count(ring));
-                                        rte_pktmbuf_free((struct rte_mbuf *)send_mb);
-                                    }
+                                    xran_enqueue_mbuf((struct rte_mbuf *)send_mb, ring);
                                 } else
                                     rte_panic("Ring is NULL\n");
                             } else {
                                 p_xran_dev_ctx->send_upmbuf2ring((struct rte_mbuf *)send_mb, ETHER_TYPE_ECPRI, vf_id);
                             }
                             pCnt->tx_counter++;
-                            pCnt->tx_bytes_counter += rte_pktmbuf_pkt_len((struct rte_mbuf *)send_mb);
+                            pCnt->tx_bytes_counter += send_len;
                             send_mb = NULL;
                         }
                     }
@@ -320,7 +318,8 @@ int32_t xran_process_tx_sym_cp_off(void *pHandle, uint8_t ctx_id, uint32_t tti, 
 
                         eth_oran_hdr = rte_pktmbuf_alloc(_eth_mbuf_pool_vf_small[p_id]);
                         if (unlikely (( eth_oran_hdr) == NULL)) {
-                            rte_panic("Failed rte_pktmbuf_alloc\n");
+                            xran_io_note_alloc_failure();
+                            return XRAN_STATUS_RESOURCE;
                         }
 
                         p_share_data->free_cb = extbuf_free_callback;
@@ -396,6 +395,7 @@ int32_t xran_process_tx_sym_cp_off(void *pHandle, uint8_t ctx_id, uint32_t tti, 
                 if (send_mb)
                 {
                     rte_mbuf_sanity_check((struct rte_mbuf *)send_mb, 0);
+                    const uint32_t send_len = rte_pktmbuf_pkt_len((struct rte_mbuf *)send_mb);
 
                     if(xran_get_syscfg_bbuoffload() == 1)
                     {
@@ -404,17 +404,14 @@ int32_t xran_process_tx_sym_cp_off(void *pHandle, uint8_t ctx_id, uint32_t tti, 
                         xran_add_eth_hdr_vlan(&eth_ctx->entities[vf_id][ID_O_RU], ETHER_TYPE_ECPRI, send_mb_temp);
 
                         if(likely(ring)) {
-                            if(rte_ring_enqueue(ring, (struct rte_mbuf *)send_mb)) {
-                                rte_panic("Ring enqueue failed. Ring free count [%d]\n",rte_ring_free_count(ring));
-                                rte_pktmbuf_free((struct rte_mbuf *)send_mb);
-                            }
+                            xran_enqueue_mbuf((struct rte_mbuf *)send_mb, ring);
                         } else
                             rte_panic("Ring is NULL\n");
                     } else {
                         p_xran_dev_ctx->send_upmbuf2ring((struct rte_mbuf *)send_mb, ETHER_TYPE_ECPRI, vf_id);
                     }
                     pCnt->tx_counter++;
-                    pCnt->tx_bytes_counter += rte_pktmbuf_pkt_len((struct rte_mbuf *)send_mb);
+                    pCnt->tx_bytes_counter += send_len;
                     send_mb = NULL;
                 }
             } else {
@@ -658,8 +655,10 @@ xran_process_tx_srs_cp_off(void *pHandle, uint8_t ctx_id, uint32_t tti, int32_t 
             }
 
             eth_oran_hdr = xran_ethdi_mbuf_indir_alloc();
-            if(unlikely(eth_oran_hdr == NULL))
-                rte_panic("Failed rte_pktmbuf_alloc\n");
+            if(unlikely(eth_oran_hdr == NULL)) {
+                xran_io_note_alloc_failure();
+                return XRAN_STATUS_RESOURCE;
+            }
 
             p_share_data->free_cb = extbuf_free_callback;
             p_share_data->fcb_opaque = NULL;
@@ -812,15 +811,14 @@ int32_t xran_process_tx_sym_cp_on_dispatch_opt(void* pHandle, uint8_t ctx_id, ui
                 return 1;   /* success */
             else
             {
-                rte_panic("\n\nFailed to enqueue : RU%d CC%d Ant%02d sym%02d tti=%d\n", p_xran_dev_ctx->xran_port_id,
-                    start_cc, start_ant, sym_id, tti);
+                xran_io_note_tx_ring_drop();
                 xran_pkt_gen_desc_free(p_desc);
             }
         } else {
             rte_panic("incorrect port %d", p_xran_dev_ctx->xran_port_id);
         }
     } else {
-        rte_panic("xran_pkt_gen_desc_alloc failure %d", p_xran_dev_ctx->xran_port_id);
+        xran_io_note_alloc_failure();
     }
 
     return retval;
@@ -1329,8 +1327,7 @@ static inline uint16_t xran_tx_sym_from_ring(struct xran_device_ctx* p_xran_dev_
 }
 #endif
 
-    xran_io_note_tx_drop(xran_tx_burst_bounded(vf_id, 0, mbufs, dequeued,
-                                               rte_eth_tx_burst, rte_pktmbuf_free));
+    xran_io_note_tx_drop(xran_tx_submit(vf_id, 0, mbufs, dequeued));
     return remaining;
 }
 
@@ -1648,7 +1645,13 @@ int32_t xran_process_tx_sym_cp_on_opt(void* pHandle, uint8_t ctx_id, uint32_t tt
                         mb_oran_hdr_ext = rte_pktmbuf_alloc(_eth_mbuf_pool_vf_small[p_id]);
                         if (unlikely((mb_oran_hdr_ext) == NULL))
                         {
-                            rte_panic("[core %d]Failed rte_pktmbuf_alloc on vf %d\n", rte_lcore_id(), p_id);
+                            xran_io_note_alloc_failure();
+#ifdef TRANSMIT_BURST
+                            /* Pending packets still own their send reference. */
+                            for (uint16_t k = 0; k < loc_tx_mbufs.len; ++k)
+                                rte_pktmbuf_free(loc_tx_mbufs.m_table[k]);
+#endif
+                            return XRAN_STATUS_RESOURCE;
                         }
 
 #ifdef ENABLE_DEBUG_COREDUMP
@@ -1841,10 +1844,7 @@ int32_t xran_process_tx_sym_cp_on_opt(void* pHandle, uint8_t ctx_id, uint32_t tt
                                 }
 #endif
                                 if(likely(ring)) {
-                                    if(rte_ring_enqueue(ring, mb_oran_hdr_ext)){
-                                        rte_panic("Ring enqueue failed. Ring free count [%d].p_xran_dev_ctx->port_id = %d\n",rte_ring_free_count(ring), p_xran_dev_ctx->xran_port_id);
-                                        rte_pktmbuf_free(mb_oran_hdr_ext);
-                                    }
+                                    xran_enqueue_mbuf(mb_oran_hdr_ext, ring);
                                 } else
                                     rte_panic("Ring is empty.\n");
                             } else {
@@ -2050,7 +2050,8 @@ xran_process_tx_srs_cp_on(void* pHandle, uint8_t ctx_id, uint32_t tti, int32_t s
                         mb_oran_hdr_ext = xran_ethdi_mbuf_indir_alloc();
                         if (unlikely((mb_oran_hdr_ext) == NULL))
                         {
-                            rte_panic("[core %d]Failed rte_pktmbuf_alloc on vf %d\n", rte_lcore_id(), vf_id);
+                            xran_io_note_alloc_failure();
+                            return XRAN_STATUS_RESOURCE;
                         }
 
 #ifdef ENABLE_DEBUG_COREDUMP
@@ -2366,7 +2367,8 @@ xran_process_tx_csirs_cp_on(void* pHandle, uint8_t ctx_id, uint32_t tti, int32_t
                         mb_oran_hdr_ext = xran_ethdi_mbuf_indir_alloc();
                         if (unlikely((mb_oran_hdr_ext) == NULL))
                         {
-                            rte_panic("[core %d]Failed rte_pktmbuf_alloc on vf %d\n", rte_lcore_id(), vf_id);
+                            xran_io_note_alloc_failure();
+                            return XRAN_STATUS_RESOURCE;
                         }
 
 #ifdef ENABLE_DEBUG_COREDUMP
@@ -2504,10 +2506,7 @@ xran_process_tx_csirs_cp_on(void* pHandle, uint8_t ctx_id, uint32_t tti, int32_t
                         if(xran_get_syscfg_bbuoffload())
                         {
                             if(likely(ring)) {
-                                if(rte_ring_enqueue(ring, mb_oran_hdr_ext)){
-                                    rte_panic("Ring enqueue failed. Ring free count [%d].\n",rte_ring_free_count(ring));
-                                    rte_pktmbuf_free(mb_oran_hdr_ext);
-                                }
+                                xran_enqueue_mbuf(mb_oran_hdr_ext, ring);
                             } else
                                 rte_panic("Ring is empty.\n");
                         } else {

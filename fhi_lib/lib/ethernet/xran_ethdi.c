@@ -1313,6 +1313,54 @@ void xran_get_io_safety_stats(uint64_t *tx_unsent, uint64_t *rx_ring_dropped)
     if (rx_ring_dropped) *rx_ring_dropped = __atomic_load_n(&xran_rx_ring_dropped, __ATOMIC_RELAXED);
 }
 
+/* Shared across ports: use the smallest configured budget. Configuration
+ * finishes before packet workers start. Counters do not change public ABI. */
+static uint64_t tx_ring_rejected, tx_alloc_failed;
+void xran_io_note_alloc_failure(void)
+{
+    __atomic_fetch_add(&tx_alloc_failed, 1, __ATOMIC_RELAXED);
+}
+void xran_io_note_tx_ring_drop(void)
+{
+    __atomic_fetch_add(&tx_ring_rejected, 1, __ATOMIC_RELAXED);
+}
+static uint64_t tx_budget_cycles;
+static uint64_t tx_calls, tx_partial, tx_zero, tx_budget_exhausted, tx_max_cycles;
+#include "xran_rx_clock.h"
+
+void xran_io_set_tx_budget(uint32_t ns)
+{
+    uint64_t cycles = (rte_get_timer_hz() * ns) / 1000000000ULL;
+    if (!cycles) cycles = 1;
+    if (!tx_budget_cycles || cycles < tx_budget_cycles) tx_budget_cycles = cycles;
+}
+uint16_t xran_tx_submit(uint16_t port, uint16_t queue, struct rte_mbuf **pkts, uint16_t count)
+{
+    struct xran_tx_result r;
+    uint16_t lost = xran_tx_burst_budget(port, queue, pkts, count,
+        rte_eth_tx_burst, rte_pktmbuf_free, rte_get_timer_cycles,
+        tx_budget_cycles, &r);
+    __atomic_fetch_add(&tx_calls, r.calls, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&tx_partial, r.partial, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&tx_zero, r.zero, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&tx_budget_exhausted, lost != 0, __ATOMIC_RELAXED);
+    uint64_t old = __atomic_load_n(&tx_max_cycles, __ATOMIC_RELAXED);
+    while (old < r.elapsed && !__atomic_compare_exchange_n(&tx_max_cycles, &old,
+           r.elapsed, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+    return lost;
+}
+void xran_get_io_timing_stats(uint64_t *calls, uint64_t *partial, uint64_t *zero,
+        uint64_t *expired, uint64_t *max_ns, uint64_t *unclassified, uint64_t *ring_rejected, uint64_t *alloc_failed)
+{
+    *alloc_failed = __atomic_load_n(&tx_alloc_failed, __ATOMIC_RELAXED);
+    *ring_rejected = __atomic_load_n(&tx_ring_rejected, __ATOMIC_RELAXED);
+    *calls = __atomic_load_n(&tx_calls, __ATOMIC_RELAXED);
+    *partial = __atomic_load_n(&tx_partial, __ATOMIC_RELAXED);
+    *zero = __atomic_load_n(&tx_zero, __ATOMIC_RELAXED);
+    *expired = __atomic_load_n(&tx_budget_exhausted, __ATOMIC_RELAXED);
+    *max_ns = __atomic_load_n(&tx_max_cycles, __ATOMIC_RELAXED) * 1000000000ULL / rte_get_timer_hz();
+    *unclassified = __atomic_load_n(&rx_clock_missing, __ATOMIC_RELAXED);
+}
 static inline uint16_t xran_tx_from_ring(int port, struct rte_ring *r)
 {
     struct rte_mbuf *mbufs[BURST_SIZE];
@@ -1325,8 +1373,7 @@ static inline uint16_t xran_tx_from_ring(int port, struct rte_ring *r)
     if (!dequeued)
         return 0;   /* Nothing to send. */
 
-    xran_io_note_tx_drop(xran_tx_burst_bounded(port, 0, mbufs, dequeued,
-                                               rte_eth_tx_burst, rte_pktmbuf_free));
+    xran_io_note_tx_drop(xran_tx_submit(port, 0, mbufs, dequeued));
     MLogXRANTask(PID_RADIO_ETH_TX_BURST, t1, MLogXRANTick());
     return remaining;
 }

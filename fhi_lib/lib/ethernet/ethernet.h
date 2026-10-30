@@ -89,6 +89,7 @@ void xran_add_eth_hdr_vlan(struct rte_ether_addr *dst, uint16_t ethertype, struc
 #define PANIC_ON(x, m, ...) do { if (unlikely(x)) \
     rte_panic("%s: " m "\n", #x, ##__VA_ARGS__); } while (0)
 
+void xran_io_note_tx_ring_drop(void);
 /* Add mbuf to the TX ring. */
 static inline int xran_enqueue_mbuf(struct rte_mbuf *mb, struct rte_ring *r)
 {
@@ -96,6 +97,7 @@ static inline int xran_enqueue_mbuf(struct rte_mbuf *mb, struct rte_ring *r)
         return 1;   /* success */
     }
 
+    xran_io_note_tx_ring_drop();
     rte_pktmbuf_free(mb);
     //print_err("failed to enqueue packet on port %d (ring full)", mb->port);
 

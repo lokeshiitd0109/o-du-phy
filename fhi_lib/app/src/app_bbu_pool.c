@@ -931,6 +931,9 @@ int32_t app_bbu_pool_task_sym_poll(void *pCookies)
                     sym_number_acc++;
                 }
 
+                for (i = 0; i < XRAN_MAX_NUM_MU; ++i)
+                    xran_publish_rx_clock(i, pCtx->ebbu_offload_ota_sym_cnt_mu[i], pCtx->xran_SFN_at_Sec_Start);
+
                 if(likely(XRAN_RUNNING == xran_if_current_state))
                 {
                     t1 = xran_tick();

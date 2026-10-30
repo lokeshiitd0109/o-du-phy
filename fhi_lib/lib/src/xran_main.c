@@ -24,6 +24,7 @@
  **/
 
 #define _GNU_SOURCE
+#include "xran_io_safety.h"
 #include <sched.h>
 #include <assert.h>
 #include <err.h>
@@ -1016,7 +1017,7 @@ void tti_ota_cb_ebbu_offload(struct rte_timer *tim, void *arg, uint8_t mu)
     else
         pTCtx[(pCtx->ebbu_offload_ota_tti_cnt_mu[PortId][mu] & 1)].tti_to_process = pTCtx[(pCtx->ebbu_offload_ota_tti_cnt_mu[PortId][mu] & 1)^1].tti_to_process;
 
-    if(xran_timingsource_get_numerology() == mu && p_syscfg->ttiCb[XRAN_CB_TTI])
+    if(xran_timingsource_get_numerology() == mu && xran_timingsource_get_ctx()->ttiCb[XRAN_CB_TTI])
     {
         pCtx->pFn(0, TMNG_TTI_POLL, 0, (void*)&(p_xran_dev_ctx->perMu[mu]));/* Generate Task TMNG_TTI_POLL with no delay*/
     }
@@ -4723,6 +4724,19 @@ int32_t xran_open(void *pHandle, struct xran_fh_config *pConf)
 
     pFhCfg = &pDevCtx->fh_cfg;
     memcpy(pFhCfg, pConf, sizeof(struct xran_fh_config));
+    /* Limit each submission batch to one quarter of the shortest configured
+     * symbol/window span. This is a CPU-service budget, not a wire deadline. */
+    for (i = 0; i < pConf->numMUs; ++i) {
+        uint8_t m = pConf->mu_number[i];
+        uint32_t ns = xran_fs_get_tti_interval(m) * 1000 / XRAN_NUM_OF_SYMBOL_PER_SLOT;
+        int spans[] = {pConf->perMu[m].T1a_max_up - pConf->perMu[m].T1a_min_up,
+                       pConf->perMu[m].T1a_max_cp_dl - pConf->perMu[m].T1a_min_cp_dl,
+                       pConf->perMu[m].T1a_max_cp_ul - pConf->perMu[m].T1a_min_cp_ul};
+        for (unsigned j = 0; j < sizeof(spans)/sizeof(spans[0]); ++j)
+            if (spans[j] > 0 && (uint32_t)spans[j] * 1000 < ns) ns = spans[j] * 1000;
+        xran_io_set_tx_budget(ns / 4);
+    }
+
 
     if(pConf->log_level)
     {

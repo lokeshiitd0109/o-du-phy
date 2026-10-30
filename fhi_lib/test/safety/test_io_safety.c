@@ -5,10 +5,13 @@
 
 struct rte_mbuf { int accepted, freed; };
 static int calls, mode;
+static uint64_t ticks;
+static uint64_t clock_mock(void) { return ticks; }
 static uint16_t send_mock(uint16_t port, uint16_t queue, struct rte_mbuf **pkts, uint16_t count)
 {
     assert(port == 3 && queue == 0 && count);
     ++calls;
+    ticks++;
     uint16_t n = mode == 0 ? 0 : mode == 1 ? count : mode == 2 ? 1 : calls < 3 ? 0 : count;
     for (int i = 0; i < n; ++i) {
         assert(!pkts[i]->accepted && !pkts[i]->freed);
@@ -26,9 +29,11 @@ static void test_tx(int behavior, int count, int accepted, int attempts)
     struct rte_mbuf data[16] = {0};
     struct rte_mbuf *packets[16];
     for (int i = 0; i < 16; ++i) packets[i] = &data[i];
-    calls = 0; mode = behavior;
-    assert(xran_tx_burst_bounded(3, 0, packets, count, send_mock, release_mock) == count - accepted);
+    calls = 0; ticks = 0; mode = behavior;
+    struct xran_tx_result result;
+    assert(xran_tx_burst_budget(3, 0, packets, count, send_mock, release_mock, clock_mock, 32, &result) == count - accepted);
     assert(calls == attempts);
+    assert(result.calls == (unsigned)calls && result.elapsed == ticks);
     for (int i = 0; i < count; ++i) {
         assert(data[i].accepted == (i < accepted));
         assert(data[i].freed == (i >= accepted));
@@ -36,11 +41,20 @@ static void test_tx(int behavior, int count, int accepted, int attempts)
 }
 int main(void)
 {
-    test_tx(0, 16, 0, XRAN_TX_MAX_ATTEMPTS); // permanently stalled NIC
+    test_tx(0, 16, 0, 32); // permanently stalled NIC
     test_tx(1, 16, 16, 1);
-    test_tx(2, 16, XRAN_TX_MAX_ATTEMPTS, XRAN_TX_MAX_ATTEMPTS); // bounded even with progress
+    test_tx(2, 16, 16, 16); // progress continues beyond the old eight-call cutoff
     test_tx(3, 16, 16, 3); // temporary backpressure recovers
     test_tx(0, 0, 0, 0);
+    // Cycle-counter wrap and expiry while making partial progress.
+    struct rte_mbuf slow[16] = {0};
+    struct rte_mbuf *slow_pkts[16];
+    for (int i = 0; i < 16; ++i) slow_pkts[i] = slow + i;
+    ticks = UINT64_MAX - 2; calls = 0; mode = 2;
+    struct xran_tx_result result;
+    assert(xran_tx_burst_budget(3, 0, slow_pkts, 16, send_mock, release_mock,
+                              clock_mock, 4, &result) == 12);
+    assert(calls == 4 && result.partial == 4 && result.elapsed == 4);
     struct rte_mbuf data[4] = {{1,0},{1,0},{0,0},{0,0}};
     struct rte_mbuf *pkts[] = {data,data+1,data+2,data+3};
     assert(xran_release_suffix(pkts, 2, 4, release_mock) == 2);

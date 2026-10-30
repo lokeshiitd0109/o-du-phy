@@ -7,10 +7,10 @@ struct rte_mbuf;
 typedef uint16_t (*xran_tx_attempt_fn)(uint16_t, uint16_t, struct rte_mbuf **, uint16_t);
 typedef void (*xran_mbuf_release_fn)(struct rte_mbuf *);
 
-/* Bound NIC calls even when each call makes partial progress. Fronthaul work
- * cannot wait indefinitely for TX descriptors. Accepted buffers belong to the
- * driver; only the unaccepted suffix remains ours to release. */
-#define XRAN_TX_MAX_ATTEMPTS 8
+/* Time budget bounds submission work, not time spent inside a PMD call.
+ * It is not a packet's absolute O-RAN transmission deadline. */
+typedef uint64_t (*xran_clock_fn)(void);
+struct xran_tx_result { uint64_t elapsed; uint32_t calls, partial, zero; };
 static inline uint16_t xran_release_suffix(struct rte_mbuf **pkts, uint16_t accepted,
                                            uint16_t count, xran_mbuf_release_fn release)
 {
@@ -19,15 +19,32 @@ static inline uint16_t xran_release_suffix(struct rte_mbuf **pkts, uint16_t acce
     return count - accepted;
 }
 
-static inline uint16_t xran_tx_burst_bounded(uint16_t port, uint16_t queue,
+static inline uint16_t xran_tx_burst_budget(uint16_t port, uint16_t queue,
         struct rte_mbuf **pkts, uint16_t count, xran_tx_attempt_fn send,
-        xran_mbuf_release_fn release)
+        xran_mbuf_release_fn release, xran_clock_fn clock, uint64_t budget,
+        struct xran_tx_result *result)
 {
+    *result = (struct xran_tx_result){0};
+    if (!count) return 0;
+    uint64_t start = clock();
     uint16_t sent = 0;
-    for (unsigned attempt = 0; sent < count && attempt < XRAN_TX_MAX_ATTEMPTS; ++attempt)
-        sent += send(port, queue, pkts + sent, count - sent);
+    do {
+        uint16_t n = send(port, queue, pkts + sent, count - sent);
+        ++result->calls;
+        result->zero += n == 0;
+        result->partial += n != 0 && n < count - sent;
+        sent += n;
+        result->elapsed = clock() - start;
+    } while (sent < count && result->elapsed < budget);
     return xran_release_suffix(pkts, sent, count, release);
 }
+uint16_t xran_tx_submit(uint16_t port, uint16_t queue, struct rte_mbuf **pkts, uint16_t count);
+void xran_io_set_tx_budget(uint32_t ns);
+void xran_publish_rx_clock(uint8_t mu, uint32_t index, uint16_t sfn);
+int xran_read_rx_clock(uint8_t mu, uint32_t *index, uint16_t *sfn);
+struct xran_rx_packet_ctl;
+int xran_rx_packet_store(struct xran_rx_packet_ctl *ctl, uint16_t start,
+    uint16_t size, uint16_t section, uint8_t *data, struct rte_mbuf *mb, int retain, uint32_t tti, uint32_t cycle);
 
 /* Packet frameId wraps at 256 frames, independently of the 1-second timer.
  * The windows are much shorter than half that cycle. */
@@ -53,6 +70,8 @@ static inline int xran_prach_symbol_offset(int symbol, int start, int symbols)
 }
 
 void xran_io_note_tx_drop(uint16_t count);
+void xran_io_note_tx_ring_drop(void);
+void xran_io_note_alloc_failure(void);
 /* Additive API: no changes to existing public counter/context layouts. */
 void xran_get_io_safety_stats(uint64_t *tx_unsent, uint64_t *rx_ring_dropped);
 #endif

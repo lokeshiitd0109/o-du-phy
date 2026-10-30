@@ -26,6 +26,7 @@
  **/
 
 #define _GNU_SOURCE
+#include "xran_io_safety.h"
 #include <sched.h>
 #include <pthread.h>
 #include <time.h>
@@ -339,6 +340,11 @@ long xran_timingsource_poll_next_tick(long interval_ns, unsigned long *used_tick
                 sym_cnt++;
             }
 
+#ifndef POLL_EBBU_OFFLOAD
+            for (i = 0; i < XRAN_MAX_NUM_MU; ++i)
+                xran_publish_rx_clock(i, xran_lib_ota_sym_idx_mu[i], xran_getSfnSecStart());
+#endif
+
 #ifdef USE_PTP_TIME
             if(debugStop && delta < interval_ns*10)
                 MLogTask(PID_TIME_SYSTIME_POLL, (p_last_time->tv_sec * NSEC_PER_SEC + p_last_time->tv_nsec), (p_cur_time->tv_sec * NSEC_PER_SEC + p_cur_time->tv_nsec));
@@ -418,7 +424,7 @@ int timing_get_debug_stop_count(void)
 
 int timing_get_start_second(void)
 {
-    return started_second;
+    return xran_timingsource_get_ctx()->started_time.tv_sec;
 }
 #endif
 
@@ -658,8 +664,8 @@ int32_t xran_timingsource_thread(__attribute__((unused)) void *args)
         printf("priority is not changed: result = %d\n",result);
 
     snprintf(thread_name, RTE_DIM(thread_name), "%s-%d", "fh_main_poll_ebbu_offload", sched_getcpu());
-    if ((res = pthread_setname_np(pthread_self(), thread_name)))
-        printf("[core %d] pthread_setname_np = %d\n",sched_getcpu(), res);
+    if ((result = pthread_setname_np(pthread_self(), thread_name)))
+        printf("[core %d] pthread_setname_np = %d\n",sched_getcpu(), result);
 
     printf("Initial TTI interval : %ld [us]\n", interval_us);
 

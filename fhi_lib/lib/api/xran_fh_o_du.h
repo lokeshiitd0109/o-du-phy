@@ -53,9 +53,7 @@ extern "C" {
 #include <stdbool.h>
 #include "rte_ether.h"
 
-#ifdef POLL_EBBU_OFFLOAD
-#include "xran_timer.h"
-#endif
+#include <time.h>
 
 #define XRAN_STATUS_SUCCESS (0)
 /**<
@@ -780,6 +778,9 @@ struct xran_cp_bf_precoding{
     int16_t weight[4];
 };
 
+/* Additive clock publisher for the offload application's timing loop. */
+void xran_publish_rx_clock(uint8_t mu, uint32_t index, uint16_t sfn);
+
 struct xran_rx_packet_ctl {
     uint16_t nRBStart[XRAN_MAX_RX_PKT_PER_SYM];    /**< start RB of RB allocation */
     uint16_t nRBSize[XRAN_MAX_RX_PKT_PER_SYM];     /**< number of RBs used */
@@ -787,8 +788,15 @@ struct xran_rx_packet_ctl {
     uint8_t *pData[XRAN_MAX_RX_PKT_PER_SYM];      /**< pointer to data buffer */
     void    *pCtrl[XRAN_MAX_RX_PKT_PER_SYM];      /**< pointer to mbuf */
     int32_t nRxPkt;    /**< number of Rx packets received */
-    int32_t reserved;    /**< reserved */
+    int32_t reserved;    /**< library RX generation tag; applications must not modify */
 };
+
+/* v1 snapshot ABI: caller supplies wire-cycle TTI (256 frames). Snapshot holds
+ * mbuf references until release, including when its FIFO entry is discarded.
+ * Both endpoints must use this API for synchronized ownership. */
+int xran_rx_snapshot_v1(struct xran_rx_packet_ctl *live, struct xran_rx_packet_ctl *snapshot,
+                        uint32_t tti, uint32_t cycle);
+void xran_rx_snapshot_release_v1(struct xran_rx_packet_ctl *snapshot);
 
 /** section descriptor for given number of PRBs used on U-plane packet creation */
 struct xran_section_desc {
