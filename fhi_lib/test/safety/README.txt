@@ -57,3 +57,16 @@ classification remains symbol-quantized, not a hardware arrival timestamp.
 No per-packet logging or payload allocation is added under RX locks. Snapshot
 buffers belong to the bounded gNB FIFO and hold metadata plus mbuf references,
 not copies of IQ. Test matched gNB + xRAN binaries before field deployment.
+
+V11 audit additions (2026-11-01)
+-------------------------------
+RX validates section-derived MU before indexing timing/PRB tables, including
+vector-parser disposition of rejected packets. The run did not report corrupt
+packets; this is a parser correctness fix, not an established latency cause.
+xran_get_rx_delta_stats_v1(port, mu, bins) adds six sampled cumulative signed
+OTA-minus-packet offset bins: <-16, -16..-1, 0..3, 4..6, 7..16, >16 symbols.
+One sample per 1021 classified packets per RX worker/port/MU; no logging or
+allocation on the RX worker. Matching gNB prints XRAN-RX-DELTA. API is additive;
+old gNBs work unchanged and new gNBs weak-link it for old-library compatibility.
+The offset uses the processing-time symbol clock, not a hardware RX timestamp.
+It does not change Ta4, packet dropping, ownership or transmit scheduling.

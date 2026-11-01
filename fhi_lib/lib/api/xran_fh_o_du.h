@@ -779,6 +779,11 @@ struct xran_cp_bf_precoding{
 };
 
 /* Additive clock publisher for the offload application's timing loop. */
+/* Optional diagnostic API. Six cumulative sampled OTA-minus-packet symbol
+ * bins: <-16, -16..-1, 0..3, 4..6, 7..16, >16. One sample per 1021 classified
+ * packets per worker/port/MU. These are not hardware arrival timestamps.
+ * Returns -1 for an invalid port, MU or output pointer. */
+int xran_get_rx_delta_stats_v1(uint8_t port, uint8_t mu, uint64_t *bins);
 void xran_publish_rx_clock(uint8_t mu, uint32_t index, uint16_t sfn);
 
 struct xran_rx_packet_ctl {

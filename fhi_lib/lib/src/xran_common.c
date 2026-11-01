@@ -192,6 +192,11 @@ inline int xran_get_mu_from_sect_id(struct xran_device_ctx *p_xran_dev_ctx, uint
 int32_t xran_validate_sectionId(void *arg, uint16_t mu)
 {
     struct xran_device_ctx *p_dev_ctx = (struct xran_device_ctx *)arg;
+    if (unlikely(mu >= XRAN_MAX_NUM_MU)) {
+        ++p_dev_ctx->fh_counters.rx_err_up;
+        ++p_dev_ctx->fh_counters.rx_err_drop;
+        return XRAN_STATUS_FAIL;
+    }
     if(unlikely(mu!= p_dev_ctx->fh_cfg.mu_number[0]))
     {
         if(likely(p_dev_ctx->fh_cfg.numMUs == 1))
@@ -219,6 +224,19 @@ int32_t xran_validate_sectionId(void *arg, uint16_t mu)
         }
     }
     return XRAN_STATUS_SUCCESS;
+}
+
+/* Sample the signed OTA-minus-packet offset without logging on RX workers.
+ * Bins: <-16, -16..-1, 0..3, 4..6, 7..16, >16 symbols. These are diagnostic
+ * ranges, not receive windows. The 1021-packet cadence avoids slot aliasing. */
+static uint64_t rx_delta_bins[XRAN_PORTS_NUM][XRAN_MAX_NUM_MU][6];
+static __thread uint32_t rx_delta_cadence[XRAN_PORTS_NUM][XRAN_MAX_NUM_MU];
+int xran_get_rx_delta_stats_v1(uint8_t port, uint8_t mu, uint64_t *bins)
+{
+    if (!bins || port >= XRAN_PORTS_NUM || mu >= XRAN_MAX_NUM_MU) return -1;
+    for (int i = 0; i < 6; ++i)
+        bins[i] = __atomic_load_n(&rx_delta_bins[port][mu][i], __ATOMIC_RELAXED);
+    return 0;
 }
 
 extern uint32_t xran_lib_ota_sym_idx_mu[];
@@ -252,6 +270,13 @@ uint32_t pktFrameId, uint32_t pktSfId, uint32_t pktSlotId)
 
     const int packet = tti * XRAN_NUM_OF_SYMBOL_PER_SLOT + symId;
     const int delta = xran_symbol_delta(otaSymIdx, packet, MAX_SYM_IDX_FROM_PACKET(interval));
+    const unsigned port = p_dev_ctx->xran_port_id;
+    if (port < XRAN_PORTS_NUM && mu < XRAN_MAX_NUM_MU &&
+        ++rx_delta_cadence[port][mu] == 1021) {
+        rx_delta_cadence[port][mu] = 0;
+        const int bin = delta < -16 ? 0 : delta < 0 ? 1 : delta < 4 ? 2 : delta < 7 ? 3 : delta <= 16 ? 4 : 5;
+        __atomic_fetch_add(&rx_delta_bins[port][mu][bin], 1, __ATOMIC_RELAXED);
+    }
     const int du = xran_get_syscfg_appmode() == O_DU;
     const int lower = du ? p_dev_ctx->perMu[mu].sym_up_ul_lb : -p_dev_ctx->perMu[mu].ruRxSymUpMax;
     const int upper = du ? p_dev_ctx->perMu[mu].sym_up_ul_ub : -p_dev_ctx->perMu[mu].ruRxSymUpMin;
@@ -574,13 +599,14 @@ int process_mbuf_batch(struct rte_mbuf* pkt_q[], void* handle, int16_t num, stru
             mu[i] = XRAN_GET_MU_FROM_SECT_ID(sect_id[i]);
             sect_id[i] = XRAN_MU_SECT_ID_TO_BASE_SECT_ID(sect_id[i]);
 
+            /* Validate wire-derived numerology before any per-MU table access. */
+            if(unlikely(xran_validate_sectionId(p_dev_ctx, mu[i]) != XRAN_STATUS_SUCCESS)) {
+                ret_data[i] = MBUF_FREE;
+                continue;
+            }
             interval_us_local = xran_fs_get_tti_interval(mu[i]);
             tti = frame_id[i] * SLOTS_PER_SYSTEMFRAME(interval_us_local) +
                       subframe_id[i] * SLOTNUM_PER_SUBFRAME(interval_us_local) + slot_id[i];
-
-            // TODO: Packets marked as invalid here should not be processed further
-            if(unlikely(xran_validate_sectionId(p_dev_ctx, mu[i]) != XRAN_STATUS_SUCCESS))
-                continue;
 
             /* Not checking timing constraints for SRS as NDM SRS spreads the transmission of packets. Marking them as on_time */
             if (xran_get_syscfg_appmode() == O_DU && p_dev_ctx->fh_cfg.srsEnable && Ant_ID[i] >= p_dev_ctx->srs_cfg.srsEaxcOffset
@@ -966,11 +992,11 @@ int32_t process_mbuf(struct rte_mbuf *pkt, void* handle, struct xran_eaxc_info *
 
     mu = XRAN_GET_MU_FROM_SECT_ID(sect_id);
     sect_id = XRAN_MU_SECT_ID_TO_BASE_SECT_ID(sect_id);
-    if (num_prbu == 0)
-        num_prbu = (p_dev_ctx->fh_cfg.perMu[mu].nULRBs - start_prbu);
-
     if(unlikely(xran_validate_sectionId(p_dev_ctx,mu) == XRAN_STATUS_FAIL))
         return MBUF_FREE;
+
+    if (num_prbu == 0)
+        num_prbu = (p_dev_ctx->fh_cfg.perMu[mu].nULRBs - start_prbu);
 
     interval_us_local = xran_fs_get_tti_interval(mu);
 
