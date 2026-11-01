@@ -238,13 +238,13 @@ long xran_timingsource_poll_next_tick(long interval_ns, unsigned long *used_tick
         tm_threshold_low    = interval_ns * 2;  // 2 symbols
 
         //add tm exception handling
-        if(unlikely(labs(delta) > tm_threshold_low))
+        if(unlikely(delta > tm_threshold_low))
         {
             print_dbg("Polling exceeds 2 symbols threshold with delta:%ld(ns), used_tick:%ld(tick)\n",
                     delta, *used_tick);
 
             pTmCtx->timer_missed_sym++;
-            if(unlikely(labs(delta) > tm_threshold_high))
+            if(unlikely(delta > tm_threshold_high))
             {
                 print_dbg("Polling exceeds 2 slots threshold, stop xran! delta:%ld(ns), used_tick:%ld(tick) \n",
                         delta,*used_tick);
@@ -254,6 +254,7 @@ long xran_timingsource_poll_next_tick(long interval_ns, unsigned long *used_tick
 
         if((delta > 0) || (delta < 0 && labs(delta) < THRESHOLD))
         {
+            xran_note_timer_lateness(delta, interval_ns);
             /* Debug stop works only when RU0 IS ACTIVE */
             if(debugStop &&(debugStopCount > 0)
                 && (xran_dev_get_ctx_by_id(0)->fh_counters.tx_counter >= debugStopCount))

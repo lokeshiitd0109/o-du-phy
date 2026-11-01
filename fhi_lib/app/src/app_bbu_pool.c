@@ -834,20 +834,20 @@ int32_t app_bbu_pool_task_sym_poll(void *pCookies)
         delta = (p_cur_time->tv_sec * NSEC_PER_SEC + p_cur_time->tv_nsec) - last_time;
 
         //add tm exception handling
-        if(unlikely(labs(delta) > tm_threshold_low) && pCtx->first_call)
+        if(unlikely(delta - interval_ns > tm_threshold_low) && pCtx->first_call)
         {
             print_dbg("poll_next_tick exceed 2 symbols threshold with delta:%ld(ns), used_tick:%ld(tick) \n",
                     delta, pCtx->used_tick);
             pCnt->timer_missed_sym++;
 
-            if(unlikely(labs(delta) > tm_threshold_sym_up_window))
+            if(unlikely(delta - interval_ns > tm_threshold_sym_up_window))
             {
                 print_dbg("poll_next_tick exceed UP TX window! delta:%ld(ns), sym_up_window is %ld, used_tick:%ld(tick) \n",
                         delta, tm_threshold_sym_up_window, pCtx->used_tick);
                 pCnt->timer_missed_sym_window++;
             }
 
-            if(unlikely(labs(delta) > tm_threshold_high))
+            if(unlikely(delta - interval_ns > tm_threshold_high))
             {
                 print_dbg("poll_next_tick exceed 2 slots threshold, stop xran! delta:%ld(ns), used_tick:%ld(tick) \n",
                         delta, pCtx->used_tick);
@@ -869,6 +869,7 @@ int32_t app_bbu_pool_task_sym_poll(void *pCookies)
 
             while(delta > (interval_ns - THRESHOLD))
             {
+                xran_note_timer_lateness(delta - interval_ns, interval_ns);
                 if(pCtx->current_second != p_cur_time->tv_sec)
                 {
                     pCtx->current_second = p_cur_time->tv_sec;

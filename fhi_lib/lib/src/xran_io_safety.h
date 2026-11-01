@@ -40,6 +40,11 @@ static inline uint16_t xran_tx_burst_budget(uint16_t port, uint16_t queue,
 }
 uint16_t xran_tx_submit(uint16_t port, uint16_t queue, struct rte_mbuf **pkts, uint16_t count);
 void xran_io_set_tx_budget(uint32_t ns);
+/* Processing-time deadline diagnostics; not NIC wire timestamps.
+ * Getter output pointers must be non-NULL. Counts are cumulative. */
+void xran_note_timer_lateness(int64_t late_ns, int64_t symbol_ns);
+void xran_get_timer_lateness_stats_v1(uint64_t *boundaries, uint64_t *late_symbols,
+        uint64_t *late_slots, uint64_t *max_ns);
 void xran_publish_rx_clock(uint8_t mu, uint32_t index, uint16_t sfn);
 int xran_read_rx_clock(uint8_t mu, uint32_t *index, uint16_t *sfn);
 struct xran_rx_packet_ctl;

@@ -18,6 +18,16 @@ static void *writer(void *arg)
 }
 int main(void)
 {
+    uint64_t boundaries, symbols, slots, worst;
+    xran_note_timer_lateness(-1000000, 100); // early is not late
+    xran_note_timer_lateness(0, 100);
+    xran_note_timer_lateness(200, 100); // exact threshold is not exceeded
+    xran_note_timer_lateness(201, 100);
+    xran_note_timer_lateness(2800, 100);
+    xran_note_timer_lateness(2801, 100);
+    xran_note_timer_lateness(10000, 0); // invalid interval ignored
+    xran_get_timer_lateness_stats_v1(&boundaries, &symbols, &slots, &worst);
+    assert(boundaries == 6 && symbols == 3 && slots == 1 && worst == 2801);
     uint32_t index; uint16_t sfn;
     assert(!xran_read_rx_clock(1, &index, &sfn));
     pthread_t thread;

@@ -70,3 +70,15 @@ allocation on the RX worker. Matching gNB prints XRAN-RX-DELTA. API is additive;
 old gNBs work unchanged and new gNBs weak-link it for old-library compatibility.
 The offset uses the processing-time symbol clock, not a hardware RX timestamp.
 It does not change Ta4, packet dropping, ownership or transmit scheduling.
+
+V12 timer diagnostics (2026-11-01)
+--------------------------------
+Timer missed-boundary counters now require positive deadline lateness; early
+CLOCK_REALTIME readings are no longer classified as missed deadlines. Offload
+uses elapsed time minus the symbol interval to match the normal timer's
+deadline-relative delta. Dispatch/catch-up and packet-drop policies unchanged.
+Optional xran_get_timer_lateness_stats_v1 returns cumulative dispatched
+boundaries, boundaries over two symbols/two slots late, maximum lateness ns.
+Matching gNB prints XRAN-TIMER. Output pointers must be non-NULL. Offload apps
+must rebuild app_bbu_pool.c for this producer; no publisher gives boundaries0.
+These are host processing timestamps, not hardware RX/TX timestamps.
